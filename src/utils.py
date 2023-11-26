@@ -21,6 +21,7 @@ def setup_seed(seed):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='yelp')
+    parser.add_argument('--epoch', type=int, default=100)
 #     parser.add_argument('--gamma', type=float, default=1)
 #     parser.add_argument('--C', type=int, default=1)
 #     parser.add_argument('--K', type=int, default=1)

@@ -157,6 +157,7 @@ class RelationAware(nn.Module):
         self.f_liner = nn.Linear(3*output_dim, 1)
         self.tanh = nn.Tanh()
         self.dropout = nn.Dropout(dropout)
+        
 
     def forward(self, src, dst):
         src = self.d_liner(src)
