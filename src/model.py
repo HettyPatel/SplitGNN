@@ -48,11 +48,11 @@ class PolyConv(nn.Module):
         def unnLaplacian(feat, D_invsqrt, graph, flag):
             """ Operation Feat * D^-1/2 A D^-1/2 """
             graph.ndata['h'] = feat * D_invsqrt
-            if flag==0:
+            if flag == 0:
                 graph.update_all(fn.copy_u('h', 'm'), fn.sum('m', 'h'))
-            elif flag==1:
+            elif flag == 1:
                 graph.update_all(self.message_positive, fn.sum('p', 'h'))
-            elif flag==2:
+            elif flag == 2:
                 graph.update_all(self.message_negative, fn.sum('n', 'h'))
             return feat - graph.ndata.pop('h') * D_invsqrt
 
@@ -60,56 +60,60 @@ class PolyConv(nn.Module):
             graph.ndata['feat'] = feat
             graph.apply_edges(self.sign_edges)
             graph.apply_edges(self.judge_edges)
-            
+
             graph.update_all(message_func=fn.copy_e('positive', 'positive'), reduce_func=self.positive_reduce)
             graph.update_all(message_func=fn.copy_e('negative', 'negative'), reduce_func=self.negative_reduce)
 
             positive_in_degrees = graph.ndata['positive_in_degree']
             negative_in_degrees = graph.ndata['negative_in_degree']
-            
+
             D_invsqrt = torch.pow(graph.in_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
             D_invsqrt_positive = torch.pow(positive_in_degrees.float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
             D_invsqrt_negative = torch.pow(negative_in_degrees.float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
-            
+
             hs_o = []
             hs_p = []
             hs_n = []
-            
+
             transh = self.transh(feat)
-            
+
             for theta in self._theta:
-                h_o = theta[0]*feat
-                
+                h_o = theta[0] * feat
+
                 for k in range(1, self._k):
                     feat = unnLaplacian(feat, D_invsqrt, graph, 0)
-                    h_o += theta[k]*feat
+                    h_o += theta[k] * feat
+
+                score, src_weighted, dst_weighted = self.relation_aware(transh, h_o)
+                h_o = h_o + src_weighted + dst_weighted
+
                 hs_o.append(h_o)
-            
+
             feat = graph.ndata['feat']
             for theta in self._theta[0:self.K+1]:
-                h_p = theta[0]*feat
-                
+                h_p = theta[0] * feat
+
                 for k in range(1, self._k):
                     feat = unnLaplacian(feat, D_invsqrt_positive, graph, 1)
-                    h_p += theta[k]*feat
+                    h_p += theta[k] * feat
                 hs_p.append(h_p)
 
             feat = graph.ndata['feat']
             for theta in self._theta[self.K+1:]:
-                h_n = theta[0]*feat
+                h_n = theta[0] * feat
 
                 for k in range(1, self._k):
                     feat = unnLaplacian(feat, D_invsqrt_negative, graph, 2)
-                    h_n += theta[k]*feat
+                    h_n += theta[k] * feat
                 hs_n.append(h_n)
-        
+
             hs_o = torch.cat(hs_o, dim=1)
             if self.K != len(self._theta) - 1 and self.K != -1:
                 hs_p = torch.cat(hs_p, dim=1)
-                hs_n = torch.cat(hs_n, dim=1) 
+                hs_n = torch.cat(hs_n, dim=1)
                 hs_pn = torch.cat([hs_p, hs_n], dim=1)
             elif self.K == -1:
                 hs_pn = torch.cat(hs_n, dim=1)
@@ -127,8 +131,8 @@ class PolyConv(nn.Module):
     def sign_edges(self, edges):
         src = edges.src['feat']
         dst = edges.dst['feat']
-        score = self.relation_aware(src, dst)
-        return {'sign':torch.sign(score)}
+        score, _, _ = self.relation_aware(src, dst)
+        return {'sign': score}
 
     def judge_edges(self, edges):
         return {'positive': (edges.data['sign'] >= 0).float(), 'negative': (edges.data['sign'] < 0).float()}
@@ -138,16 +142,17 @@ class PolyConv(nn.Module):
 
     def negative_reduce(self, nodes):
         return {'negative_in_degree': nodes.mailbox['negative'].sum(1)}
-    
+
     def message_positive(self, edges):
         mask = (edges.data['sign'] >= 0).float().view(-1, 1)
         masked_src_feats = edges.src['h'] * mask
         return {'p': masked_src_feats}
-    
+
     def message_negative(self, edges):
         mask = (edges.data['sign'] < 0).float().view(-1, 1)
         masked_src_feats = edges.src['h'] * mask
         return {'n': masked_src_feats}
+
     
     
 class RelationAware(nn.Module):
@@ -157,7 +162,7 @@ class RelationAware(nn.Module):
         self.f_liner = nn.Linear(3*output_dim, 1)
         self.tanh = nn.Tanh()
         self.dropout = nn.Dropout(dropout)
-        
+        self.attention_linear = nn.Linear(2 * output_dim, 1)
 
     def forward(self, src, dst):
         src = self.d_liner(src)
@@ -167,7 +172,14 @@ class RelationAware(nn.Module):
         e_feats = self.dropout(e_feats)
         score = self.f_liner(e_feats).squeeze()
         score = self.tanh(score)
-        return score
+        
+        #attention mechanism
+        att_input = torch.cat([src, dst], dim=1)
+        att_weights = F.softmax(self.attention_linear(att_input), dim=0)
+        src_weighted = att_weights * src
+        dst_weighted = att_weights * dst
+        
+        return score, src_weighted, dst_weighted
 
 
 class MultiRelationSplitGNNLayer(nn.Module):
